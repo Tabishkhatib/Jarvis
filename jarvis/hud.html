@@ -1,0 +1,1061 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>HUD</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  html, body { margin: 0; height: 100%; background: #01060b; overflow: hidden; cursor: default; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+  .hint { position: fixed; bottom: 10px; right: 14px; color: rgba(120, 220, 255, 0.25);
+          font: 11px Consolas, "Courier New", monospace; letter-spacing: 1px; }
+  /* mini web windows: small live pages beside the heart (up to 3), fed by threads */
+  .web { position: fixed; z-index: 6; display: none; pointer-events: auto;
+         transition: left .5s ease, top .5s ease, width .5s ease, height .5s ease; }
+  #webs { --hc: 90, 210, 255; }   /* --hc follows the heart's colour */
+  .web .frame { position: relative; width: 100%; height: 100%; box-sizing: border-box; overflow: hidden; cursor: pointer;
+                border: 1.5px solid rgba(var(--hc), 0.9); border-radius: 7px;
+                background: rgba(214, 236, 255, 0.72); backdrop-filter: blur(2px);
+                animation: shine 2.6s ease-in-out infinite;
+                opacity: 0; transform: scale(0.9); transform-origin: left center; transition: opacity .45s, transform .45s; }
+  .web.show .frame { opacity: 0.9; transform: none; }
+  /* glowing border that gently pulses, in the heart's colour */
+  @keyframes shine {
+    0%, 100% { box-shadow: 0 0 10px rgba(var(--hc), 0.55), 0 0 26px rgba(var(--hc), 0.28), inset 0 0 14px rgba(var(--hc), 0.22), 0 0 1px rgba(255, 255, 255, 0.9); }
+    50%      { box-shadow: 0 0 18px rgba(var(--hc), 0.85), 0 0 46px rgba(var(--hc), 0.45), inset 0 0 22px rgba(var(--hc), 0.35), 0 0 2px rgba(255, 255, 255, 1); }
+  }
+  /* a streak of light sliding across the glass now and then */
+  @keyframes sweep { 0% { transform: translateX(-120%) skewX(-20deg); } 55%, 100% { transform: translateX(260%) skewX(-20deg); } }
+  .web .frame::before { content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 35%; pointer-events: none; z-index: 2;
+                        background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.22), transparent);
+                        animation: sweep 5s ease-in-out infinite; }
+  /* glass tint over the page, in the heart's colour */
+  .web .frame::after { content: ""; position: absolute; inset: 0; pointer-events: none;
+                       background: linear-gradient(160deg, rgba(var(--hc), 0.3), rgba(var(--hc), 0.16)); }
+  /* once the real (see-through) window sits on top, this frame becomes the coloured glow behind it */
+  .web .frame.real { background: radial-gradient(ellipse at 40% 40%, rgba(var(--hc), 0.55), rgba(var(--hc), 0.22)), #04121c; }
+  .web .frame.real > .bar, .web .frame.real > .pg { visibility: hidden; }
+  /* stand-in page, shown in the preview or until the real window appears on top */
+  .web .bar { height: 26px; background: rgba(225, 236, 245, 0.8); display: flex; align-items: center; gap: 6px; padding: 0 8px;
+              font: 11px Segoe UI, Arial, sans-serif; color: #555; border-bottom: 1px solid #d5d9dc; }
+  .web .bar i { width: 9px; height: 9px; border-radius: 50%; background: #c9cdd1; display: inline-block; }
+  .web .url { flex: 1; background: #fff; border-radius: 10px; padding: 2px 9px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .web .pg { padding: 12px 14px; font: 12px Arial, sans-serif; color: #202124; }
+  .web .logo { font: bold 20px "Product Sans", Arial, sans-serif; letter-spacing: -0.5px; margin-bottom: 8px; }
+  .web .logo b:nth-child(1) { color: #4285f4 } .web .logo b:nth-child(2) { color: #ea4335 } .web .logo b:nth-child(3) { color: #fbbc05 }
+  .web .logo b:nth-child(4) { color: #4285f4 } .web .logo b:nth-child(5) { color: #34a853 } .web .logo b:nth-child(6) { color: #ea4335 }
+  .web .q { border: 1px solid #dfe1e5; border-radius: 16px; padding: 5px 12px; margin-bottom: 10px; box-shadow: 0 1px 4px rgba(0,0,0,.12); }
+  .web .r { margin-bottom: 9px } .web .r .h { color: #1a0dab; font-size: 13px } .web .r .c { color: #006621; font-size: 10px }
+  .web .r .l { height: 6px; background: #e4e6e8; border-radius: 3px; margin-top: 4px; }
+  .web .ctl { position: absolute; left: 0; right: 0; top: calc(100% + 8px); display: flex; justify-content: flex-end; gap: 8px;
+              opacity: 0; transition: opacity .45s .3s; }
+  .web.show .ctl { opacity: 1; }
+  .web .ctl span { font: 10px Consolas, monospace; letter-spacing: 2px; color: #bfefff; cursor: pointer; padding: 4px 9px;
+                   border: 1px solid rgba(var(--hc), 0.5); border-radius: 4px; background: rgba(4, 22, 34, 0.75);
+                   box-shadow: 0 0 8px rgba(var(--hc), 0.25); }
+  .web .ctl span:hover { background: rgba(30, 90, 125, 0.7); color: #fff; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="webs"></div>
+<template id="webTpl"><div class="web"><div class="frame"><div class="bar"><i></i><i></i><i></i><span class="url"></span></div>
+  <div class="pg"><div class="logo"><b>G</b><b>o</b><b>o</b><b>g</b><b>l</b><b>e</b></div><div class="q"></div>
+  <div class="r"><div class="c">www.example.com</div><div class="h">Top result</div><div class="l"></div><div class="l" style="width:70%"></div></div>
+  <div class="r"><div class="c">www.example.org</div><div class="h">Another result</div><div class="l"></div><div class="l" style="width:55%"></div></div></div></div>
+  <div class="ctl"><span data-a="full">⤢ FULL SCREEN</span><span data-a="close">× CLOSE ALL</span></div></div></template>
+<div class="hint">F11 FULLSCREEN</div>
+<script>
+const cv = document.getElementById("c");
+const mctx = cv.getContext("2d", { alpha: false });   // the screen
+let ctx = mctx;                                        // whatever we're drawing into right now
+let W = 0, H = 0, DPR = 1, cx = 0, cy = 0, R = 100;
+let bgLayer = null, shortTicks = null, longTicks = null;
+// Bloom: glowing parts are drawn on their own layer, then blurred copies at
+// 1/4 and 1/10 size are added on top for a soft glow and a wide haze.
+let bloom = null, warpBuf = null, warpCtx = null, scanBg = null;
+const canFilter = "filter" in mctx;
+function makeCanvas(w, h) {
+  const c = document.createElement("canvas");
+  c.width = Math.max(1, Math.round(w)); c.height = Math.max(1, Math.round(h));
+  return [c, c.getContext("2d")];
+}
+
+// Everything that only changes when the window resizes is drawn once, here
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
+  mctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  [warpBuf, warpCtx] = makeCanvas(cv.width, cv.height);           // copy of the frame for the wavy bend
+  const [s1, s1ctx] = makeCanvas(cv.width / 4, cv.height / 4);    // tight glow source
+  const [b1, b1ctx] = makeCanvas(cv.width / 4, cv.height / 4);    // tight glow, blurred
+  const [s2, s2ctx] = makeCanvas(cv.width / 12, cv.height / 12);  // wide haze
+  bloom = { s1, s1ctx, b1, b1ctx, s2, s2ctx };
+  cx = W / 2; cy = H / 2 - H * 0.03; R = Math.min(W, H) * 0.3;
+
+  bgLayer = document.createElement("canvas");
+  bgLayer.width = cv.width; bgLayer.height = cv.height;
+  const b = bgLayer.getContext("2d");
+  b.setTransform(DPR, 0, 0, DPR, 0, 0);
+  const bg = b.createRadialGradient(cx, cy, 0, cx, cy, Math.max(W, H) * 0.75);
+  bg.addColorStop(0, "#06202e"); bg.addColorStop(0.45, "#030f17"); bg.addColorStop(1, "#010409");
+  b.fillStyle = bg; b.fillRect(0, 0, W, H);
+  b.strokeStyle = "rgba(90,210,255,0.03)"; b.lineWidth = 1; b.beginPath();
+  for (let x = cx % 48; x < W; x += 48) { b.moveTo(x, 0); b.lineTo(x, H); }
+  for (let y = cy % 48; y < H; y += 48) { b.moveTo(0, y); b.lineTo(W, y); }
+  b.stroke();
+
+  // hologram: the background cut into thin stripes, laid over the projection so
+  // the background shows through even the brightest parts
+  {
+    let sctx;
+    [scanBg, sctx] = makeCanvas(cv.width, cv.height);
+    sctx.drawImage(bgLayer, 0, 0);
+    const [stripe, stx] = makeCanvas(1, 3);
+    stx.fillStyle = "#000"; stx.fillRect(0, 0, 1, 1);                // 1 line in every 3 pixels
+    sctx.globalCompositeOperation = "destination-in";
+    sctx.fillStyle = sctx.createPattern(stripe, "repeat");
+    sctx.fillRect(0, 0, cv.width, cv.height);
+  }
+
+  // tick marks as two reusable shapes, rotated each frame instead of rebuilt
+  shortTicks = new Path2D(); longTicks = new Path2D();
+  for (let i = 0; i < 120; i++) {
+    const a = i / 120 * Math.PI * 2, long = i % 10 === 0;
+    const p = long ? longTicks : shortTicks;
+    const r1 = R * 0.86, r2 = R * (long ? 0.92 : 0.895);
+    p.moveTo(Math.cos(a) * r1, Math.sin(a) * r1);
+    p.lineTo(Math.cos(a) * r2, Math.sin(a) * r2);
+  }
+}
+window.addEventListener("resize", resize);
+resize();
+
+// ---------- live state from Python ----------
+let name = "JARVIS", state = "booting", speaking = false, connected = false;
+let voice = 0, mic = 0, shown = 0;
+let userLine = { text: "", at: 0 }, replyLine = { text: "", at: 0 };
+let stats = { brain: "", latency: "" };
+let wrapCache = { key: "", lines: [] };
+
+// ---------- mini web windows ----------
+// When Jarvis answers from the web, small live windows open beside the heart:
+// normally one Google search, or up to 3 source pages when the sources disagree
+// (Claude picks them). They are real browser windows Jarvis places on top of the
+// HUD; the heart shrinks and moves aside, and silk threads with energy orbs feed
+// each one. The page underneath is a stand-in, seen in the preview or for a moment
+// before the real window lands.
+const websBox = document.getElementById("webs"), webTpl = document.getElementById("webTpl");
+let webs = [], webBorn = 0, webTimer = null, heartK = 1, heartShift = 0, webSig = "";
+let webOn = false;
+const pops = { get length() { return webs.length; } };          // the heart shrinks while windows are up
+function webRects(n) {
+  // stack them down the right-hand side; smaller when there are more of them
+  const w = n > 1 ? 400 : 440, gap = 40, avail = H - 250;
+  const h = Math.min(300, Math.floor((avail - gap * (n - 1)) / n));
+  const total = n * h + (n - 1) * gap;
+  const top = Math.max(100, H * 0.45 - total / 2);
+  return Array.from({ length: n }, (_, i) => ({ x: W - 26 - w, y: top + i * (h + gap), w, h }));
+}
+function openLink(url) {
+  // ask Jarvis to open it in your normal browser; if that isn't available (preview file), open here
+  fetch("/open?u=" + encodeURIComponent(url)).then((r) => { if (!r.ok) throw 0; }).catch(() => window.open(url, "_blank"));
+}
+function showSources(query, links, show, append) {
+  const fresh = (show && show.length ? show.slice(0, 3)
+               : [query ? "https://www.google.com/search?q=" + encodeURIComponent(query) : (links && links[0] && links[0].url)])
+               .filter((u) => /^https?:\/\//.test(u || ""));
+  if (!fresh.length) return;
+  // a follow-up keeps what's open and adds the new page(s) beside it (newest 3 kept);
+  // otherwise the new page(s) replace whatever was open
+  let urls = append ? webs.map((w) => w.url).concat(fresh.filter((u) => !webs.some((w) => w.url === u))) : fresh;
+  urls = urls.slice(-3);
+  const sig = urls.join("|");
+  if (sig === webSig && webs.length) return;                    // same windows already up
+  webSig = sig; webOn = true;
+  const now = performance.now();
+  // close windows that aren't wanted any more
+  for (const w of webs.filter((w) => !urls.includes(w.url))) { w.el.classList.remove("show"); const el = w.el; setTimeout(() => el.remove(), 450); }
+  const keep = new Map(webs.filter((w) => urls.includes(w.url)).map((w) => [w.url, w]));
+  if (!keep.size) webBorn = now;
+  const rects = webRects(urls.length);
+  let added = 0;
+  webs = urls.map((url, i) => {
+    const r = rects[i];
+    let w = keep.get(url);
+    if (!w) {                                                   // a new window: build it
+      const el = webTpl.content.firstElementChild.cloneNode(true);
+      el.querySelector(".url").textContent = url.replace(/^https?:\/\//, "");
+      let label = query || url;
+      try { if (!url.includes("google.com/search")) label = new URL(url).hostname.replace(/^www\./, ""); } catch (e) {}
+      el.querySelector(".q").textContent = label;
+      if (!url.includes("google.com/search")) el.querySelector(".logo").style.visibility = "hidden";
+      el.querySelector(".frame").onclick = () => openLink(url);
+      el.querySelector('[data-a="full"]').onclick = () => openLink(url);
+      el.querySelector('[data-a="close"]').onclick = () => closeWeb();
+      el.style.transition = "none";                             // appear in place, then animate from there on
+      Object.assign(el.style, { left: r.x + "px", top: r.y + "px", width: r.w + "px", height: r.h + "px", display: "block" });
+      websBox.appendChild(el);
+      requestAnimationFrame(() => { el.style.transition = ""; });
+      w = { el, url, born: now + added * 300 };                 // each new window arrives in turn
+      setTimeout(() => el.classList.add("show"), 350 + added * 300);   // the threads reach out first
+      added++;
+    } else {                                                    // already open: slide it to its new spot
+      Object.assign(w.el.style, { left: r.x + "px", top: r.y + "px", width: r.w + "px", height: r.h + "px" });
+    }
+    return w;
+  });
+  // one CLOSE ALL, under the last window
+  webs.forEach((w, i) => { w.el.querySelector('[data-a="close"]').style.display = i === webs.length - 1 ? "" : "none"; });
+  // where they are on your screen, so Jarvis can put the real windows exactly there
+  const bw = (window.outerWidth - window.innerWidth) / 2, top = window.outerHeight - window.innerHeight - bw;
+  const qs = urls.map((u, i) => {
+    const r = rects[i];
+    return `u=${encodeURIComponent(u)}&r=${Math.round(window.screenX + bw + r.x)},${Math.round(window.screenY + top + r.y)},${r.w},${r.h}`;
+  }).join("&");
+  setTimeout(() => fetch("/web?s=" + (window.devicePixelRatio || 1) + "&" + qs)
+    .then((res) => { if (res.ok) webs.forEach((w) => w.el.querySelector(".frame").classList.add("real")); })   // real windows up: glow through them
+    .catch(() => {}), 450);
+  clearTimeout(webTimer);
+  webTimer = setTimeout(closeWeb, 120000);                      // tidy away after 2 minutes
+}
+function removeWebs(instant) {
+  for (const w of webs) { w.el.classList.remove("show"); const el = w.el; setTimeout(() => el.remove(), instant ? 0 : 450); }
+  webs = []; webSig = ""; webOn = false;
+}
+function closeWeb() {
+  if (!webs.length) return;
+  removeWebs(false);
+  fetch("/web_close").catch(() => {});
+}
+window.addEventListener("resize", () => {
+  const rects = webRects(webs.length);
+  webs.forEach((w, i) => Object.assign(w.el.style, { left: rects[i].x + "px", top: rects[i].y + "px" }));
+});
+
+// threads from the heart to each web window, with energy orbs flowing along them
+// gentle hover: each window drifts up and down on its own beat. Uses the wall clock,
+// so Jarvis can move the real windows on exactly the same beat.
+const bobAt = (i) => Math.sin(Date.now() / 1000 * 1.3 + i * 1.9) * 5;
+function drawPopThreads(C, now) {
+  if (!webs.length) return;
+  webs.forEach((w, i) => { w.el.style.translate = `0 ${bobAt(i).toFixed(2)}px`; });
+  const hx = cx + heartShift, hy = cy, hr = R * 0.42 * heartK, rects = webRects(webs.length);
+  mctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  mctx.globalCompositeOperation = "lighter";
+  const hi = [C[0] * 0.5 + 128, C[1] * 0.5 + 128, C[2] * 0.5 + 128], tt = now / 1000;
+  const N = webs.length > 1 ? 5 : 7;
+  webs.forEach((wnd, wi) => {
+    const grow = Math.max(0, Math.min(1, (now - wnd.born) / 450));       // threads shoot out before the window lands
+    if (grow <= 0) return;
+    const r = rects[wi];
+    for (let k = 0; k < N; k++) {
+      const f = k / (N - 1);                                             // spread down the window's left edge
+      const ex = r.x, ey = r.y + r.h * (0.15 + 0.7 * f) + bobAt(wi);   // threads ride with the hover
+      const ang = Math.atan2(ey - hy, ex - hx) + (f - 0.5) * 0.4 + Math.sin(tt * 0.7 + k + wi) * 0.03;
+      const sx = hx + Math.cos(ang) * hr, sy = hy + Math.sin(ang) * hr;
+      const mx = (sx + ex) / 2, my = (sy + ey) / 2 + 22 + Math.sin(tt * 1.1 + k * 1.7 + wi) * 10;   // soft droop and sway
+      const pt = (u) => { const iu = 1 - u; return [iu * iu * sx + 2 * iu * u * mx + u * u * ex, iu * iu * sy + 2 * iu * u * my + u * u * ey]; };
+      mctx.beginPath(); mctx.moveTo(sx, sy);
+      for (let i = 1; i <= 24; i++) { const q = pt((i / 24) * grow); mctx.lineTo(q[0], q[1]); }
+      mctx.strokeStyle = rgba(C, 0.07); mctx.lineWidth = 2.2; mctx.stroke();
+      mctx.strokeStyle = rgba(hi, 0.5); mctx.lineWidth = 0.6; mctx.stroke();
+      if (grow < 1) continue;
+      for (let o = 0; o < 3; o++) {                                      // energy orbs feeding the window
+        const u = (tt * (0.3 + k * 0.03) + o / 3 + k * 0.17 + wi * 0.3) % 1, q = pt(u), fade = Math.sin(u * Math.PI);
+        mctx.fillStyle = rgba(C, 0.25 * fade); mctx.beginPath(); mctx.arc(q[0], q[1], 4.5, 0, 6.283); mctx.fill();
+        mctx.fillStyle = rgba(hi, 0.95 * fade); mctx.beginPath(); mctx.arc(q[0], q[1], 1.7, 0, 6.283); mctx.fill();
+      }
+    }
+  });
+  mctx.globalCompositeOperation = "source-over";
+}
+
+function connect() {
+  const es = new EventSource("/events");
+  es.onopen = () => { connected = true; };
+  es.onerror = () => { connected = false; };
+  es.onmessage = (e) => {
+    const m = JSON.parse(e.data);
+    if (m.type === "hello") name = (m.name || "Jarvis").toUpperCase();
+    else if (m.type === "state") state = m.state;
+    else if (m.type === "speaking") speaking = m.on;
+    else if (m.type === "voice") voice = Math.max(voice, m.v);
+    else if (m.type === "mic") mic = Math.max(mic, m.v);
+    else if (m.type === "user") userLine = { text: m.text, at: performance.now() };
+    else if (m.type === "reply") replyLine = { text: m.text, at: performance.now() };
+    else if (m.type === "stats") stats = { brain: m.brain, latency: m.latency };
+    else if (m.type === "sources") showSources(m.query, m.links, m.show, m.append);
+    else if (m.type === "web_close") removeWebs(false);           // a new topic: Jarvis closed the windows
+  };
+}
+connect();
+
+// ---------- look per mode ----------
+const MODES = {
+  booting:   { label: "INITIALISING",  glow: 0.45, spin: 0.6, hue: [90, 210, 255] },
+  sleeping:  { label: "STANDING BY",   glow: 0.14, spin: 0.08, hue: [90, 210, 255] },
+  listening: { label: "LISTENING",     glow: 0.42, spin: 0.25, hue: [90, 210, 255] },
+  thinking:  { label: "PROCESSING",    glow: 0.5,  spin: 1.8,  hue: [255, 225, 70] },
+  speaking:  { label: "SPEAKING",      glow: 0.48, spin: 0.45, hue: [255, 185, 80] },
+  offline:   { label: "OFFLINE",       glow: 0.12, spin: 0.0,  hue: [255, 90, 90] },
+};
+let cur = { glow: 0.3, spin: 0.2, hue: [90, 210, 255] };
+const lerp = (a, b, k) => a + (b - a) * k;
+const rgba = (c, a) => `rgba(${c[0] | 0},${c[1] | 0},${c[2] | 0},${a.toFixed(3)})`;
+
+// ---------- 3D particle orb ----------
+// Points spread evenly over a sphere; each frame the surface is pushed in and
+// out by a moving ripple whose height follows the voice level.
+const ORB_N = 1400;
+const ORB_DIM = 0.6;                           // orb brightness, same share in every state
+const orb = [];
+for (let i = 0; i < ORB_N; i++) {
+  const y = 1 - (i / (ORB_N - 1)) * 2, r = Math.sqrt(1 - y * y), phi = i * 2.39996;
+  orb.push([Math.cos(phi) * r, y, Math.sin(phi) * r]);
+}
+const RING_N = 140;
+const orbRings = [0.35, -0.6].map((tilt, idx) => {
+  const pts = [];
+  for (let i = 0; i < RING_N; i++) {
+    const a = i / RING_N * Math.PI * 2;
+    pts.push([Math.cos(a) * 1.25, Math.sin(a) * Math.sin(tilt) * 1.25, Math.sin(a) * Math.cos(tilt) * 1.25]);
+  }
+  return { pts, speed: idx ? -0.6 : 0.45, alpha: 0.35 };
+});
+// vertical ring: passes over the top and bottom of the orb and sweeps around it
+{
+  const pts = [];
+  for (let i = 0; i < RING_N; i++) {
+    const a = i / RING_N * Math.PI * 2;
+    pts.push([0, Math.sin(a) * 1.34, Math.cos(a) * 1.34]);
+  }
+  orbRings.push({ pts, speed: 0.32, alpha: 0.5 });
+}
+let orbYaw = 0, orbPitch = 0.35;
+const depthBuckets = [new Float32Array(ORB_N * 3), new Float32Array(ORB_N * 3), new Float32Array(ORB_N * 3)];
+const bucketLen = [0, 0, 0];
+let rot = 0, last = performance.now(), tickYaw = 0, tickSpeed = 0, feedRate = 0.5, warp = 0, feedPhase = 0, spokePhase = 0, spokeCache = null, tumX = 0, tumY = 0,
+    slideTravel = 0;
+// ---------- 3D scene ----------
+// Everything is a point in 3D space (in units of R). One scene rotation turns it
+// all, and a perspective projection makes nearer things bigger and brighter.
+const FOCAL = 4.5;
+let S = [1, 0, 0, 0, 1, 0, 0, 0, 1];                         // this frame's scene rotation
+function matYawPitch(yaw, pitch) {                           // turn about Y (yaw), then X (pitch)
+  const cyw = Math.cos(yaw), syw = Math.sin(yaw), cp = Math.cos(pitch), sp = Math.sin(pitch);
+  return [cyw, 0, syw, sp * syw, cp, -sp * cyw, -cp * syw, sp, cp * cyw];
+}
+function mmul(A, B) {
+  const o = new Array(9);
+  for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++)
+    o[r * 3 + c] = A[r * 3] * B[c] + A[r * 3 + 1] * B[3 + c] + A[r * 3 + 2] * B[6 + c];
+  return o;
+}
+// project a point through matrix M (scene, or scene x local) -> [screenX, screenY, scale, depth]
+function projM(M, x, y, z) {
+  const X = M[0] * x + M[1] * y + M[2] * z, Y = M[3] * x + M[4] * y + M[5] * z, Z = M[6] * x + M[7] * y + M[8] * z;
+  const sc = FOCAL / (FOCAL + Z);
+  return [cx + X * R * sc, cy + Y * R * sc, sc, Z];
+}
+const depthA = (z) => Math.max(0.22, Math.min(1, 0.62 - z * 0.34));   // nearer = brighter
+// stroke a 3D line in short chunks so each part is shaded by its own depth
+function stroke3D(pts, color, alpha, width, chunk) {
+  chunk = chunk || 10;
+  for (let i = 0; i < pts.length - 1; i += chunk) {
+    const end = Math.min(pts.length - 1, i + chunk);
+    let z = 0, sc = 0;
+    for (let j = i; j <= end; j++) { z += pts[j][3]; sc += pts[j][2]; }
+    const n = end - i + 1;
+    glow(() => {
+      for (let j = i; j <= end; j++) j === i ? ctx.moveTo(pts[j][0], pts[j][1]) : ctx.lineTo(pts[j][0], pts[j][1]);
+    }, color, alpha * depthA(z / n), width * (sc / n));
+  }
+}
+
+// Stars fill a sphere of space all around the core, at every depth. The core
+// grabs them one by one and pulls them in from every direction.
+const STARS = 300;
+const spawnStar = (d, nowMs, instant) => {
+  const u = Math.random() * 2 - 1, ph = Math.random() * Math.PI * 2, s = Math.sqrt(1 - u * u);
+  d.dx = s * Math.cos(ph); d.dy = u; d.dz = s * Math.sin(ph);                  // a random direction
+  d.r = Math.random() < 0.45 ? 0.6 + Math.random() * 0.75 : 1.35 + Math.random() * 1.45;
+  d.pulled = false; d.v = 0; d.px = null;
+  d.born = instant ? -1e9 : nowMs;
+  d.tw = Math.random() * Math.PI * 2;
+  d.base = 0.35 + Math.random() * 0.4;
+  return d;
+};
+const dots = Array.from({ length: STARS }, () => spawnStar({}, 0, true));
+const dotBuckets = [[], [], [], []];
+
+// Solar flares: like the surface of a burning sun, loops of glowing matter rise out of
+// the orb, plasma streams along them, blobs are flung off the top, then they sink back.
+const TINTS = [[70, 140, 255], [120, 200, 255], [190, 225, 255], null];     // deep blue, ice blue, pale blue, HUD colour
+const gauss = () => { let u = 0, v = 0; while (!u) u = Math.random(); while (!v) v = Math.random(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(6.283 * v); };
+const randDir = () => { const u = Math.random() * 2 - 1, ph = Math.random() * 6.283, s = Math.sqrt(1 - u * u); return [s * Math.cos(ph), u, s * Math.sin(ph)]; };
+const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const norm = (a) => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; };
+function makeFlare(t0) {
+  const c = randDir(), t1 = norm(cross(c, randDir())), roll = Math.random();
+  return {
+    c, t1, up: cross(c, t1),
+    tint: roll < 0.33 ? TINTS[0] : roll < 0.66 ? TINTS[1] : TINTS[2],
+    shade: roll < 0.33 ? -0.25 : roll < 0.66 ? 0 : 0.4,
+    sep: 0.45 + Math.random() * 0.5,                                   // how far apart the two feet are (radians)
+    maxH: 0.55 + Math.random() * 0.5,                                  // how high the loop rises
+    life: 4.5 + Math.random() * 3, t: t0,
+    ph: Math.random() * 6.283,
+    parts: Array.from({ length: 220 }, () => ({
+      u: Math.random(), sp: (0.18 + Math.random() * 0.3) * (Math.random() < 0.5 ? 1 : -1),   // flowing up one leg, down the other
+      a: gauss(), b: gauss(), tw: Math.random() * 6.283, br: 0.4 + Math.random() * 0.6,
+    })),
+    spray: [],                                                          // blobs flung off the top
+  };
+}
+const FLARES = 5;
+const flares = Array.from({ length: FLARES }, (_, i) => makeFlare(-i * 1.3));
+
+// automatic quality: thins the busiest layers if the frame rate drops, restores when smooth
+let quality = 1, fpsAvg = 60, qTimer = 0;
+
+// Quarter arcs: quarter circles of tiny particles revolving round the core, each in its
+// own plane and direction, tied to the orb by a few thin silk-like threads.
+// Two shells: 12 inner arcs, and 16 more further out.
+const makeQArc = (k, n, rMin, rSpread, nParts) => ({
+  yaw: k * (6.283 / n) + Math.random() * 0.4, pitch: (Math.random() - 0.5) * 2.4,
+  // random revolution: speed, direction and the tilt of its orbit all wander over time
+  ang: Math.random() * 6.283, v: (Math.random() - 0.5) * 1.2, vt: 0, next: 0,
+  vy: 0, vyt: 0, vp: 0, vpt: 0,
+  r: rMin + Math.random() * rSpread,
+  silk: Array.from({ length: 6 }, (_, i) => ({                        // thin connecting threads
+    u: (i + 0.3 + Math.random() * 0.4) / 6, lean: (Math.random() - 0.5) * 0.5, bow: (Math.random() - 0.5) * 0.3,
+    sp: 0.4 + Math.random() * 0.6, ph: Math.random() * 6.283,
+  })),
+  parts: Array.from({ length: nParts }, () => ({
+    u: Math.random(), j: gauss() * 0.5, z: gauss() * 0.5, tw: Math.random() * 6.283, b: 0.35 + Math.random() * 0.65,
+  })),
+});
+const QARCS = [
+  ...Array.from({ length: 12 }, (_, k) => makeQArc(k, 12, 0.9, 0.3, 140)),     // inner shell
+  ...Array.from({ length: 16 }, (_, k) => makeQArc(k, 16, 1.22, 0.2, 180)),     // outer shell, wider
+];
+
+// Cheap glow: a wide faint stroke under a thin bright one (no shadowBlur)
+function glow(pathFn, color, alpha, width) {
+  ctx.beginPath(); pathFn();
+  ctx.strokeStyle = rgba(color, alpha * 0.22); ctx.lineWidth = width * 3.2; ctx.stroke();
+  ctx.strokeStyle = rgba(color, alpha); ctx.lineWidth = width; ctx.stroke();
+}
+function circle(r) { return () => ctx.arc(cx, cy, r, 0, Math.PI * 2); }
+function arcAt(r, a0, a1) { return () => ctx.arc(cx, cy, r, a0, a1); }
+
+function text(str, x, y, size, color, align, spacing) {
+  ctx.font = `${size}px Consolas, "Courier New", monospace`;
+  ctx.fillStyle = color; ctx.textAlign = align || "center";
+  if ("letterSpacing" in ctx) ctx.letterSpacing = (spacing || 0) + "px";
+  ctx.fillText(str, x, y);
+  if ("letterSpacing" in ctx) ctx.letterSpacing = "0px";
+}
+function wrap(str, maxWidth, size) {
+  const key = str + "|" + maxWidth + "|" + size;
+  if (wrapCache.key === key) return wrapCache.lines;  // only measure text when it changes
+  ctx.font = `${size}px Consolas, "Courier New", monospace`;
+  const words = str.split(" "), lines = [];
+  let line = "";
+  for (const w of words) {
+    const test = line ? line + " " + w : w;
+    if (ctx.measureText(test).width > maxWidth && line) { lines.push(line); line = w; }
+    else line = test;
+  }
+  if (line) lines.push(line);
+  wrapCache = { key, lines: lines.slice(-3) };
+  return wrapCache.lines;
+}
+
+function frame(now) {
+  const realDt = Math.max(0.001, (now - last) / 1000);              // true time since the last frame
+  const dt = Math.min(0.05, realDt); last = now;
+  fpsAvg = lerp(fpsAvg, 1 / realDt, 0.1);
+  qTimer += realDt;
+  if (qTimer > 1.0) {
+    qTimer = 0;
+    if (fpsAvg < 30) quality = Math.max(0.08, quality * 0.6);           // well behind: cut detail fast
+    else if (fpsAvg < 50) quality = Math.max(0.08, quality - 0.1);
+    else if (fpsAvg > 58) quality = Math.min(1, quality + 0.08);         // smooth: add detail back
+  }
+  const modeName = !connected ? "offline" : speaking ? "speaking" : state;
+  const mode = MODES[modeName] || MODES.sleeping;
+  const ease = 1 - Math.exp(-dt * 4);  // time-based, same feel at any refresh rate
+  cur.glow = lerp(cur.glow, mode.glow, ease);
+  cur.spin = lerp(cur.spin, mode.spin, ease);
+  cur.hue = cur.hue.map((c, i) => lerp(c, mode.hue[i], ease));
+  const C = cur.hue, g = cur.glow;
+  const hueShift = Math.min(1, Math.hypot(C[0] - 90, C[1] - 210, C[2] - 255) / 120);   // 0 at rest, 1 when fully shifted
+
+  const target = modeName === "speaking" ? voice : modeName === "listening" ? mic : 0;
+  shown = lerp(shown, target, 1 - Math.exp(-dt * (target > shown ? 30 : 7)));
+  const decay = Math.exp(-dt * 9);
+  voice *= decay; mic *= decay;
+  const breathe = modeName === "sleeping" ? 0.06 * (1 + Math.sin(now / 900)) : 0;
+  const pulse = shown + breathe;
+  rot += dt * cur.spin;
+
+  ctx = mctx;
+  ctx.globalCompositeOperation = "source-over";
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.drawImage(bgLayer, 0, 0);
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  // while source cards are up, the heart shrinks a little and moves aside to make room
+  const popOn = pops.length > 0;
+  heartK = lerp(heartK, popOn ? 0.74 : 1, 1 - Math.exp(-dt * 3));
+  heartShift = lerp(heartShift, popOn ? -Math.min(W * 0.12, 170) : 0, 1 - Math.exp(-dt * 3));
+  ctx.translate(cx + heartShift, cy); ctx.scale(heartK, heartK); ctx.translate(-cx, -cy);
+
+  // bend amount: only while talking or listening, stronger with the voice
+  const talking = modeName === "speaking" || modeName === "listening";
+  warp = lerp(warp, talking ? 0.35 + pulse * 0.9 : 0, 1 - Math.exp(-dt * 4));
+  if (warp > 0.01) {
+    // bend the whole structure: slowly changing squash, stretch and skew around the centre
+    const tb = now / 1000;
+    const sx = 1 + warp * 0.07 * Math.sin(tb * 1.3 + Math.sin(tb * 0.37) * 2);
+    const sy = 1 + warp * 0.07 * Math.sin(tb * 1.7 + 1.1 + Math.sin(tb * 0.29) * 2);
+    const kx = warp * 0.09 * Math.sin(tb * 0.9 + Math.sin(tb * 0.41) * 3);
+    const ky = warp * 0.06 * Math.sin(tb * 1.1 + 2.0 + Math.sin(tb * 0.33) * 3);
+    ctx.translate(cx, cy); ctx.transform(sx, ky, kx, sy, 0, 0); ctx.translate(-cx, -cy);
+  }
+
+  // scene rotation: the whole body floats and turns a full 360 degrees on X and Y
+  tumY += dt * 0.16;
+  tumX += dt * 0.11;
+  S = matYawPitch(tumY, tumX);
+  const tt = now / 1000;
+  const feed = { thinking: 2.6, speaking: 2.4 + pulse * 0.6, listening: 1.0, sleeping: 0.3, booting: 0.7, offline: 0 }[modeName] ?? 0.5;
+  feedRate = lerp(feedRate, feed, 1 - Math.exp(-dt * 2));
+
+  ctx.globalCompositeOperation = "lighter";
+
+  // ---------- stars: a sphere of space around the core ----------
+  {
+    let grabs = feedRate * 5 * dt;
+    while (grabs > 0) {
+      if (Math.random() < grabs) {
+        for (let tries = 0; tries < 6; tries++) {
+          const d = dots[(Math.random() * STARS) | 0];
+          if (!d.pulled && now - d.born > 800 && Math.random() < Math.min(1, 1.2 / d.r)) { d.pulled = true; d.v = 0; break; }
+        }
+      }
+      grabs -= 1;
+    }
+    for (const b of dotBuckets) b.length = 0;
+    for (const d of dots) {
+      if (d.pulled) {
+        d.v += (0.9 + 0.7 / d.r) * (0.6 + feedRate * 0.5) * dt;
+        d.r -= d.v * dt;
+        if (d.r < 0.13) { spawnStar(d, now, false); continue; }
+      }
+      const p = projM(S, d.dx * d.r, d.dy * d.r, d.dz * d.r);
+      if (p[2] > 2.2) { d.px = null; continue; }                    // too close to the camera
+      let e, tx = 0, ty = 0;
+      const dep = depthA(p[3]);
+      if (!d.pulled) {
+        const fadeIn = Math.min(1, (now - d.born) / 800);
+        e = d.base * (0.7 + 0.3 * Math.sin(now / 700 + d.tw)) * fadeIn * 0.85 * dep;
+      } else {
+        const closeness = Math.min(1, Math.max(0, 1 - (d.r - 0.2) / 1.2));
+        const vanish = d.r < 0.24 ? (d.r - 0.13) / 0.11 : 1;
+        e = Math.min(1, 0.45 + closeness * 0.55 + d.v * 0.08) * vanish * (0.5 + 0.5 * dep);
+        if (d.px !== null) {                                          // streak from where it just was
+          tx = (d.px - p[0]) * 2.2; ty = (d.py - p[1]) * 2.2;
+          const len = Math.hypot(tx, ty), maxL = R * 0.09;
+          if (len > maxL) { tx *= maxL / len; ty *= maxL / len; }
+        }
+      }
+      d.px = p[0]; d.py = p[1];
+      const bucket = e < 0.22 ? 0 : e < 0.45 ? 1 : e < 0.72 ? 2 : 3;
+      dotBuckets[bucket].push(p[0], p[1], p[0] + tx + 0.01, p[1] + ty, p[2]);
+    }
+    ctx.lineCap = "round";
+    for (let b = 0; b < 4; b++) {
+      const arr = dotBuckets[b];
+      if (!arr.length) continue;
+      ctx.beginPath();
+      for (let j = 0; j < arr.length; j += 5) { ctx.moveTo(arr[j], arr[j + 1]); ctx.lineTo(arr[j + 2], arr[j + 3]); }
+      const col = b === 3 ? [C[0] * 0.5 + 128, C[1] * 0.5 + 128, C[2] * 0.5 + 128] : C;
+      ctx.strokeStyle = rgba(col, (0.14 + b * 0.27) * (0.55 + 0.45 * g));
+      ctx.lineWidth = 1.4 + b * 0.6;
+      ctx.stroke();
+    }
+    ctx.lineCap = "butt";
+  }
+
+  // ---------- solar flares erupting from the orb ----------
+  {
+    const rs = 0.36 * (1 + pulse * 0.12);                               // orb surface
+    for (let fi = 0; fi < FLARES; fi++) {
+      let F = flares[fi];
+      F.t += dt * (0.75 + feedRate * 0.2);
+      if (F.t >= F.life) { F = flares[fi] = makeFlare(0); }
+      if (F.t < 0) continue;
+      const p = F.t / F.life;
+      const h = F.maxH * Math.pow(Math.sin(p * Math.PI), 0.7) * (1 + pulse * 0.25);   // rise, then sink back
+      const vis = Math.min(1, p * 6, (1 - p) * 5);
+      // colour: blue at rest, shifts to the state colour like the rest of the HUD
+      const sh = F.shade, scol = [0, 1, 2].map((i) => sh < 0 ? C[i] * (1 + sh) : C[i] + (255 - C[i]) * sh);
+      const col = [0, 1, 2].map((i) => lerp(F.tint[i], scol[i], hueShift));
+      const hi = [col[0] * 0.6 + 100, col[1] * 0.6 + 100, col[2] * 0.6 + 100];
+      // point on the loop, s from one foot (0) to the other (1), with boiling turbulence
+      const loop = (s, ja, jb) => {
+        const ang = (s - 0.5) * F.sep, ca = Math.cos(ang), sa = Math.sin(ang);
+        const dx = F.c[0] * ca + F.t1[0] * sa, dy = F.c[1] * ca + F.t1[1] * sa, dz = F.c[2] * ca + F.t1[2] * sa;
+        const boil = Math.sin(s * 9 + tt * 3.1 + F.ph) * 0.025 + Math.sin(s * 17 - tt * 4.3) * 0.012;
+        const lift = h * Math.sin(s * Math.PI) + boil * (h / F.maxH);
+        const r = rs + lift + ja;
+        const side = jb + Math.sin(s * 6 + tt * 2.2 + F.ph) * 0.03 * (h / F.maxH);
+        return [dx * r + F.up[0] * side, dy * r + F.up[1] * side, dz * r + F.up[2] * side];
+      };
+      // faint glowing body of the loop
+      const body = [];
+      for (let i = 0; i <= 16; i++) { const w = loop(i / 16, 0, 0); body.push(projM(S, w[0], w[1], w[2])); }
+      ctx.beginPath(); body.forEach((q, i) => i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]));
+      ctx.strokeStyle = rgba(col, 0.07 * vis); ctx.lineWidth = R * 0.08; ctx.stroke();
+      ctx.strokeStyle = rgba(col, 0.16 * vis); ctx.lineWidth = R * 0.03; ctx.stroke();
+      // plasma particles streaming along the loop
+      const dimP = new Path2D(), brightP = new Path2D();
+      for (const pt of F.parts) {
+        const u = ((pt.u + tt * pt.sp) % 1 + 1) % 1;
+        const thick = 0.015 + 0.04 * Math.sin(u * Math.PI);           // thicker at the top
+        const w = loop(u, pt.a * thick, pt.b * thick);
+        const q = projM(S, w[0], w[1], w[2]);
+        const bri = pt.br * (0.6 + 0.4 * Math.sin(now / 300 + pt.tw)) * vis * depthA(q[3]);
+        if (bri < 0.06) continue;
+        const sz = (bri > 0.5 ? 2.3 : 1.5) * q[2];
+        (bri > 0.5 ? brightP : dimP).rect(q[0] - sz / 2, q[1] - sz / 2, sz, sz);
+      }
+      // blobs flung off the top while the loop is near its peak, falling back under gravity
+      if (p > 0.3 && p < 0.75 && Math.random() < dt * (10 + pulse * 14)) {
+        const top = loop(0.4 + Math.random() * 0.2, 0, 0), tl = Math.hypot(top[0], top[1], top[2]);
+        const sp = 0.4 + Math.random() * 0.6;
+        F.spray.push({ x: top[0], y: top[1], z: top[2],
+          vx: top[0] / tl * sp + gauss() * 0.08, vy: top[1] / tl * sp + gauss() * 0.08, vz: top[2] / tl * sp + gauss() * 0.08,
+          age: 0, life: 1.2 + Math.random() * 1.2 });
+      }
+      const streak = new Path2D();
+      F.spray = F.spray.filter((b) => {
+        b.age += dt; if (b.age > b.life) return false;
+        const d = Math.hypot(b.x, b.y, b.z), gk = 0.55 / (d * d) * dt;   // gravity pulls it back to the orb
+        b.vx -= b.x / d * gk; b.vy -= b.y / d * gk; b.vz -= b.z / d * gk;
+        const ox = b.x, oy = b.y, oz = b.z;
+        b.x += b.vx * dt; b.y += b.vy * dt; b.z += b.vz * dt;
+        if (Math.hypot(b.x, b.y, b.z) < rs) return false;
+        const q0 = projM(S, ox - b.vx * 0.06, oy - b.vy * 0.06, oz - b.vz * 0.06), q1 = projM(S, b.x, b.y, b.z);
+        streak.moveTo(q0[0], q0[1]); streak.lineTo(q1[0], q1[1]);
+        return true;
+      });
+      ctx.fillStyle = rgba(col, 0.7 * vis); ctx.fill(dimP);
+      ctx.fillStyle = rgba(hi, 0.95 * vis); ctx.fill(brightP);
+      ctx.lineCap = "round";
+      ctx.strokeStyle = rgba(hi, 0.65); ctx.lineWidth = 1.6; ctx.stroke(streak);
+      ctx.lineCap = "butt";
+    }
+  }
+
+  // ---------- outer ring: gyroscope, on its own swinging axis ----------
+  {
+    const gx = Math.sin(tt * 0.35) * 1.05, gy = Math.sin(tt * 0.23 + 1.0) * 0.55;
+    const M = mmul(S, matYawPitch(gy, gx));
+    const ringPts = (a0, a1, n) => {
+      const out = [];
+      for (let i = 0; i <= n; i++) { const a = a0 + (a1 - a0) * i / n; out.push(projM(M, Math.cos(a) * 1.02, Math.sin(a) * 1.02, 0)); }
+      return out;
+    };
+    stroke3D(ringPts(0, Math.PI * 2, 120), C, 0.2 * g, 1, 12);
+    ctx.lineCap = "round";
+    for (let i = 0; i < 4; i++) {
+      const a = -rot * 0.35 + i * Math.PI / 2;
+      stroke3D(ringPts(a, a + 0.55 - i * 0.08, 16), C, 0.8 * g, 3, 16);
+    }
+    ctx.lineCap = "butt";
+    const o = projM(M, Math.cos(rot * 0.9) * 1.02, Math.sin(rot * 0.9) * 1.02, 0), da = depthA(o[3]);
+    ctx.fillStyle = rgba(C, 0.25 * g * da); ctx.beginPath(); ctx.arc(o[0], o[1], 8 * o[2], 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = rgba(C, g * da); ctx.beginPath(); ctx.arc(o[0], o[1], 3.2 * o[2], 0, Math.PI * 2); ctx.fill();
+  }
+
+  // ---------- tick ring ("speedometer"): spins 360 on its own vertical axis ----------
+  {
+    const want = modeName === "thinking" ? 3.2 : (modeName === "speaking" || modeName === "listening") ? -1.1
+               : modeName === "offline" ? 0 : 0.12;
+    tickSpeed = lerp(tickSpeed, want, 1 - Math.exp(-dt * 2.5));
+    tickYaw += dt * tickSpeed;
+    const M = mmul(S, matYawPitch(tickYaw, 0));
+    const near = [new Path2D(), new Path2D()], far = [new Path2D(), new Path2D()];
+    for (let i = 0; i < 120; i++) {
+      const a = i / 120 * Math.PI * 2, long = i % 10 === 0, ca = Math.cos(a), sa = Math.sin(a);
+      const r2 = long ? 0.92 : 0.895;
+      const p1 = projM(M, ca * 0.86, sa * 0.86, 0), p2 = projM(M, ca * r2, sa * r2, 0);
+      const path = (p1[3] > 0 ? far : near)[long ? 1 : 0];
+      path.moveTo(p1[0], p1[1]); path.lineTo(p2[0], p2[1]);
+    }
+    ctx.strokeStyle = rgba(C, 0.12 * g); ctx.lineWidth = 1; ctx.stroke(far[0]);
+    ctx.strokeStyle = rgba(C, 0.32 * g); ctx.lineWidth = 2; ctx.stroke(far[1]);
+    ctx.strokeStyle = rgba(C, 0.38 * g); ctx.lineWidth = 1; ctx.stroke(near[0]);
+    ctx.strokeStyle = rgba(C, 0.9 * g);  ctx.lineWidth = 2; ctx.stroke(near[1]);
+  }
+
+  // ---------- inner arcs (in the main plane); extra fast arcs while thinking ----------
+  {
+    const arcPts = (r, a0, a1) => {
+      const out = [];
+      for (let i = 0; i <= 18; i++) { const a = a0 + (a1 - a0) * i / 18; out.push(projM(S, Math.cos(a) * r, Math.sin(a) * r, 0)); }
+      return out;
+    };
+    ctx.lineCap = "round";
+    for (let i = 0; i < 3; i++) {
+      const a = rot * (1.2 + i * 0.3) + i * 2.1;
+      stroke3D(arcPts(0.56, a, a + 1.1), C, 0.85 * g, 2.5, 18);
+    }
+    if (modeName === "thinking") {
+      for (let i = 0; i < 2; i++) { const a = -rot * 3 + i * Math.PI; stroke3D(arcPts(0.62, a, a + 0.7), C, 0.9, 2, 18); }
+    }
+    ctx.lineCap = "butt";
+  }
+
+  // ---------- feeder spirals (snail shells) + spokes + slide: two copies at right angles ----------
+  spokePhase += dt * (0.15 + feedRate * 0.22);
+  slideTravel += dt * 0.03 * (0.6 + feedRate * 0.3);
+  feedPhase += dt * (0.08 + feedRate * 0.11);
+  for (const [SM, ph] of [[S, 0], [mmul(S, matYawPitch(Math.PI / 2, 0)), 0.5]]) {   // main plane, then perpendicular
+    const TURNS = 3.25, TH = TURNS * Math.PI * 2;
+    const rOut = 1.0, rIn = 0.1, b = Math.log(rOut / rIn) / TH;
+    const sp3 = (s) => {                                            // world point on the spiral
+      const th = s * TH, r = rOut * Math.exp(-b * th), a = -Math.PI / 2 + th;
+      return [Math.cos(a) * r, Math.sin(a) * r, 0];
+    };
+    const spiral = (s) => { const w = sp3(s); return projM(SM, w[0], w[1], w[2]); };
+    ctx.lineCap = "round";
+    const SEGS = 26;
+    for (let seg = 0; seg < SEGS; seg++) {
+      const s0 = seg / SEGS, s1 = (seg + 1) / SEGS, mid = (s0 + s1) / 2;
+      const pts = [];
+      for (let i = 0; i <= 14; i++) pts.push(spiral(s0 + (s1 - s0) * i / 14));
+      stroke3D(pts, C, (0.7 + 0.3 * mid) * Math.min(1, mid * 26) * (0.45 + 0.55 * g), 3.4 - mid * 2.2, 14);
+    }
+    // spokes every 2 cm of spiral (measured on the flat spiral), straight in to the core
+    const CM2 = 2 * 96 / 2.54 / R;                                  // 2 cm in R units
+    if (!spokeCache || spokeCache.R !== R) {
+      const pts = [];
+      let len = 0, next = CM2 * 0.5, prev = sp3(0);
+      for (let i = 1; i <= 1200; i++) {
+        const w = sp3(i / 1200);
+        len += Math.hypot(w[0] - prev[0], w[1] - prev[1]); prev = w;
+        if (len >= next) { if (Math.hypot(w[0], w[1]) > 0.42) pts.push(w); next += CM2; }
+      }
+      spokeCache = { R, pts };
+    }
+    const endR = 0.11;
+    spokeCache.pts.forEach((w, k) => {
+      const r0 = Math.hypot(w[0], w[1]), ux = w[0] / r0, uy = w[1] / r0;
+      const a = projM(SM, w[0], w[1], 0), bb = projM(SM, ux * endR, uy * endR, 0);
+      const da = depthA((a[3] + bb[3]) / 2);
+      ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(bb[0], bb[1]);
+      ctx.strokeStyle = rgba(C, (0.07 + 0.12 * g) * da); ctx.lineWidth = 3; ctx.stroke();
+      ctx.strokeStyle = rgba(C, (0.18 + 0.3 * g) * da);  ctx.lineWidth = 0.9; ctx.stroke();
+      for (let dd = 0; dd < 2; dd++) {
+        const u = (spokePhase + ph + k * 0.37 + dd * 0.5) % 1, t2 = u * u, rr = r0 + (endR - r0) * t2;
+        const p = projM(SM, ux * rr, uy * rr, 0);
+        const bright = Math.min(1, u * 5) * (u > 0.9 ? (1 - u) / 0.1 : 1) * depthA(p[3]);
+        ctx.fillStyle = rgba(C, 0.22 * bright * (0.5 + 0.5 * g));
+        ctx.beginPath(); ctx.arc(p[0], p[1], 4.5 * p[2], 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = rgba([C[0] * 0.4 + 153, C[1] * 0.4 + 153, C[2] * 0.4 + 153], bright * (0.55 + 0.45 * g));
+        ctx.beginPath(); ctx.arc(p[0], p[1], 1.9 * p[2], 0, Math.PI * 2); ctx.fill();
+      }
+    });
+    // slide threaded on the spiral: a solid 3D block (length along the spiral, height out
+    // from it, depth through the plane), so it shows its sides and top as the scene turns
+    {
+      const sPos = 0.05 + 0.24 * (0.5 - 0.5 * Math.cos((slideTravel + ph) * Math.PI * 2));
+      const w0 = sp3(sPos), w1 = sp3(sPos + 0.004);
+      let tx = w1[0] - w0[0], ty = w1[1] - w0[1]; const tl = Math.hypot(tx, ty); tx /= tl; ty /= tl;
+      const nx = -ty, ny = tx;
+      const L = 0.34, Hh = 0.065, D = 0.07;                            // length, height, depth (R units)
+      // local (a along, b across, c through the plane) -> screen
+      const V = (a, b, c) => projM(SM, w0[0] + tx * a + nx * b, w0[1] + ty * a + ny * b, c);
+      const A = (0.5 + 0.5 * g) * depthA(V(0, 0, 0)[3]);
+      const x0 = -L / 2, y0 = -Hh / 2, rr = Hh * 0.28;
+      const prof = [[x0, y0 + rr], [x0 + rr, y0], [x0 + L - rr * 2, y0], [x0 + L - rr * 0.6, y0 + rr * 0.3],
+                    [x0 + L, y0 + rr * 1.4], [x0 + L, y0 + Hh], [x0, y0 + Hh]];   // side outline, rounded nose
+      const sides = [-D / 2, D / 2].map((c) => prof.map(([a, b]) => V(a, b, c)));
+      // faint solid faces (both sides, plus the top strip) so it reads as a block
+      ctx.fillStyle = rgba(C, 0.07 * A);
+      for (const sd of sides) { ctx.beginPath(); sd.forEach((q, i) => i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1])); ctx.closePath(); ctx.fill(); }
+      for (let i = 0; i < prof.length; i++) {
+        const j = (i + 1) % prof.length, p = sides[0][i], q = sides[0][j], r2 = sides[1][j], s2 = sides[1][i];
+        ctx.beginPath(); ctx.moveTo(p[0], p[1]); ctx.lineTo(q[0], q[1]); ctx.lineTo(r2[0], r2[1]); ctx.lineTo(s2[0], s2[1]); ctx.closePath();
+        ctx.fillStyle = rgba(C, (i === 1 || i === 2 ? 0.1 : 0.05) * A); ctx.fill();
+      }
+      // edges: both outlines and the depth edges joining them
+      glow(() => {
+        for (const sd of sides) { sd.forEach((q, i) => i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1])); ctx.lineTo(sd[0][0], sd[0][1]); }
+        for (let i = 0; i < prof.length; i++) { ctx.moveTo(sides[0][i][0], sides[0][i][1]); ctx.lineTo(sides[1][i][0], sides[1][i][1]); }
+      }, C, 0.8 * A, 1.3);
+      // details: grip serrations on both sides, grooves across the top, ejection port, sights
+      ctx.beginPath();
+      for (const c of [-D / 2, D / 2]) {
+        for (let i = 0; i < 7; i++) { const a = x0 + L * 0.05 + i * L * 0.022, p = V(a, y0 + Hh * 0.22, c), q = V(a, y0 + Hh * 0.82, c); ctx.moveTo(p[0], p[1]); ctx.lineTo(q[0], q[1]); }
+        for (let i = 0; i < 4; i++) { const a = x0 + L * 0.8 + i * L * 0.022, p = V(a, y0 + Hh * 0.3, c), q = V(a, y0 + Hh * 0.82, c); ctx.moveTo(p[0], p[1]); ctx.lineTo(q[0], q[1]); }
+      }
+      for (let i = 0; i < 7; i++) { const a = x0 + L * 0.05 + i * L * 0.022, p = V(a, y0, -D * 0.4), q = V(a, y0, D * 0.4); ctx.moveTo(p[0], p[1]); ctx.lineTo(q[0], q[1]); }
+      ctx.strokeStyle = rgba(C, 0.55 * A); ctx.lineWidth = 0.9; ctx.stroke();
+      // ejection port: a window cut into the top and one side
+      const port = [[x0 + L * 0.42, -D * 0.35], [x0 + L * 0.59, -D * 0.35], [x0 + L * 0.59, D * 0.35], [x0 + L * 0.42, D * 0.35]].map(([a, c]) => V(a, y0, c));
+      ctx.beginPath(); port.forEach((q, i) => i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1])); ctx.closePath();
+      ctx.strokeStyle = rgba(C, 0.75 * A); ctx.lineWidth = 1; ctx.stroke();
+      // sights: two small blocks standing on top
+      const box = (a0, a1, hgt, w) => {
+        const pts = [];
+        for (const c of [-w, w]) for (const [a, b] of [[a0, y0], [a1, y0], [a1, y0 - hgt], [a0, y0 - hgt]]) pts.push(V(a, b, c));
+        ctx.beginPath();
+        for (const f of [0, 4]) { for (let i = 0; i < 4; i++) { const q = pts[f + i]; i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); } ctx.closePath(); }
+        for (let i = 0; i < 4; i++) { ctx.moveTo(pts[i][0], pts[i][1]); ctx.lineTo(pts[i + 4][0], pts[i + 4][1]); }
+        ctx.strokeStyle = rgba(C, 0.75 * A); ctx.lineWidth = 1; ctx.stroke();
+      };
+      box(x0 + L * 0.06, x0 + L * 0.11, Hh * 0.2, D * 0.3);
+      box(x0 + L * 0.9, x0 + L * 0.93, Hh * 0.18, D * 0.12);
+    }
+    // energy pulses riding the spiral into the heart
+    for (let k = 0; k < 7; k++) {
+      const u = (feedPhase + ph + k / 7) % 1, p = spiral(u);
+      const bright = Math.min(1, u * 4) * (u > 0.92 ? (1 - u) / 0.08 : 1) * depthA(p[3]);
+      ctx.fillStyle = rgba(C, 0.25 * bright * g);
+      ctx.beginPath(); ctx.arc(p[0], p[1], (6 - u * 3) * p[2], 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = rgba([C[0] * 0.4 + 153, C[1] * 0.4 + 153, C[2] * 0.4 + 153], bright * (0.6 + 0.4 * g));
+      ctx.beginPath(); ctx.arc(p[0], p[1], 2.4 * p[2], 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.lineCap = "butt";
+    }
+
+  // ---------- core: the particle sphere, in the same 3D space ----------
+  orbYaw += dt * (0.25 + cur.spin * 0.55);
+  orbPitch = 0.35 + Math.sin(now / 4000) * 0.15;
+  const MO = mmul(S, matYawPitch(orbYaw, orbPitch));
+  const orbS = 0.36 * (1 + pulse * 0.12);
+  const ripple = 0.04 + pulse * 0.38;
+  bucketLen[0] = bucketLen[1] = bucketLen[2] = 0;
+  for (let i = 0; i < ORB_N; i++) {
+    const p = orb[i];
+    const n = Math.sin(p[0] * 3.1 + tt * 1.7) * Math.sin(p[1] * 2.7 - tt * 1.3) * Math.sin(p[2] * 3.3 + tt * 2.1)
+            + 0.5 * Math.sin(p[0] * 6.0 - tt * 3.1 + p[2] * 4.0);
+    const k = (1 + n * ripple) * orbS;
+    const q = projM(MO, p[0] * k, p[1] * k, p[2] * k);
+    const zl = q[3] / orbS;                                         // depth relative to the sphere
+    const bkt = zl < -0.35 ? 2 : zl < 0.35 ? 1 : 0;
+    const arr = depthBuckets[bkt], j = bucketLen[bkt];
+    arr[j] = q[0]; arr[j + 1] = q[1]; arr[j + 2] = q[2] * 1.3;
+    bucketLen[bkt] = j + 3;
+  }
+  for (let bk = 0; bk < 3; bk++) {
+    const arr = depthBuckets[bk], size = 1.0 + bk * 0.45;
+    const front = [C[0] * 0.6 + 102, C[1] * 0.6 + 102, C[2] * 0.6 + 102];
+    ctx.fillStyle = bk === 2 ? rgba(front, (0.35 + 0.5 * g) * ORB_DIM) : rgba(C, (0.22 + bk * 0.3) * g * ORB_DIM);
+    ctx.beginPath();
+    for (let j = 0; j < bucketLen[bk]; j += 3) { const s2 = size * arr[j + 2]; ctx.rect(arr[j] - s2 / 2, arr[j + 1] - s2 / 2, s2, s2); }
+    ctx.fill();
+  }
+  // orbit rings around the core (tilted ones and the vertical one)
+  for (let r = 0; r < orbRings.length; r++) {
+    const pts = orbRings[r].pts, spinR = tt * orbRings[r].speed * (0.5 + cur.spin);
+    const cs = Math.cos(spinR), sn = Math.sin(spinR), out = [];
+    for (let i = 0; i <= RING_N; i++) {
+      const p = pts[i % RING_N];
+      out.push(projM(MO, (p[0] * cs - p[2] * sn) * orbS, p[1] * orbS, (p[0] * sn + p[2] * cs) * orbS));
+    }
+    stroke3D(out, C, orbRings[r].alpha * g * 1.4, 1.1, 14);
+  }
+
+  // ---------- quarter arcs of particles, webbed to the orb ----------
+  {
+    const SPAN = Math.PI / 2;
+    const hi = [C[0] * 0.5 + 128, C[1] * 0.5 + 128, C[2] * 0.5 + 128];
+    const rIn = orbS * 1.02;
+    for (const Q of QARCS) {
+      if (tt > Q.next) {                                               // every few seconds, pick a new random motion
+        Q.vt = (Math.random() < 0.5 ? -1 : 1) * (0.2 + Math.random() * 0.9);   // may reverse direction
+        Q.vyt = (Math.random() - 0.5) * 0.7; Q.vpt = (Math.random() - 0.5) * 0.6;
+        Q.next = tt + 2.5 + Math.random() * 4;
+      }
+      const ez = 1 - Math.exp(-dt * 0.8);                              // ease into it, no sudden jumps
+      Q.v = lerp(Q.v, Q.vt, ez); Q.vy = lerp(Q.vy, Q.vyt, ez); Q.vp = lerp(Q.vp, Q.vpt, ez);
+      Q.ang += dt * Q.v * (0.7 + feedRate * 0.2); Q.yaw += dt * Q.vy; Q.pitch += dt * Q.vp;
+      const M = mmul(S, matYawPitch(Q.yaw, Q.pitch));
+      const a0 = Q.ang;
+      const rA = Q.r * (1 + pulse * 0.04);
+      const P = (a, r) => projM(M, Math.cos(a) * r, Math.sin(a) * r, 0);
+      // silk strands: a few gossamer-thin threads from the orb to the arc, gently swaying,
+      // with a glint of light sliding along each one (like light catching spider silk)
+      const silk = new Path2D(), glints = [];
+      for (let i = 0; i < Q.silk.length; i++) {
+        const sk = Q.silk[i];
+        const aE = a0 + SPAN * sk.u, aS = aE + sk.lean;                 // ends on the arc, starts a little off-line on the orb
+        const sway = Math.sin(tt * sk.sp + sk.ph) * 0.05;
+        const p0 = P(aS, rIn), p1 = P(aE, rA);
+        const mr = (rIn + rA) / 2 - 0.02, c = P((aS + aE) / 2 + sk.bow + sway, mr);   // soft droop in the middle
+        silk.moveTo(p0[0], p0[1]); silk.quadraticCurveTo(c[0], c[1], p1[0], p1[1]);
+        const t = (tt * 0.35 + sk.ph) % 1, it = 1 - t;                 // glint position along the strand
+        glints.push(it * it * p0[0] + 2 * it * t * c[0] + t * t * p1[0], it * it * p0[1] + 2 * it * t * c[1] + t * t * p1[1], Math.sin(t * Math.PI));
+      }
+      const mid = P(a0 + SPAN / 2, (rIn + rA) / 2), dw = depthA(mid[3]);
+      ctx.strokeStyle = rgba(C, 0.08 * dw * (0.6 + 0.4 * g)); ctx.lineWidth = 1.6; ctx.stroke(silk);
+      ctx.strokeStyle = rgba(hi, 0.55 * dw * (0.6 + 0.4 * g)); ctx.lineWidth = 0.55; ctx.stroke(silk);
+      for (let i = 0; i < glints.length; i += 3) {
+        ctx.fillStyle = rgba(hi, 0.7 * glints[i + 2] * dw * (0.5 + 0.5 * g));
+        ctx.beginPath(); ctx.arc(glints[i], glints[i + 1], 1.3, 0, 6.283); ctx.fill();
+      }
+      // the arc itself: a band of tiny twinkling particles, fading at both ends
+      const dim = new Path2D(), bright = new Path2D();
+      for (const pt of Q.parts) {
+        const a = a0 + pt.u * SPAN, r = rA + pt.j * 0.03;
+        const p = projM(M, Math.cos(a) * r, Math.sin(a) * r, pt.z * 0.03);
+        const end = Math.sin(pt.u * Math.PI);
+        const br = pt.b * (0.65 + 0.35 * Math.sin(now / 420 + pt.tw)) * (0.35 + 0.65 * end) * depthA(p[3]);
+        const sz = (br > 0.55 ? 2.2 : 1.4) * p[2];
+        (br > 0.55 ? bright : dim).rect(p[0] - sz / 2, p[1] - sz / 2, sz, sz);
+      }
+      ctx.fillStyle = rgba(C, 0.9 * (0.6 + 0.4 * g)); ctx.fill(dim);
+      ctx.fillStyle = rgba(hi, 1.0 * (0.65 + 0.35 * g)); ctx.fill(bright);
+    }
+  }
+
+  // the heart: always lit, with a slow heartbeat
+  const beat = 0.5 + 0.5 * Math.sin(now / 650);
+  const heartR = R * (0.075 + pulse * 0.05 + beat * 0.008);
+  const halo = ctx.createRadialGradient(cx, cy, 0, cx, cy, heartR * 6);
+  halo.addColorStop(0, rgba(C, (0.28 + 0.08 * beat) * (0.5 + 0.5 * g) * ORB_DIM));
+  halo.addColorStop(1, rgba(C, 0));
+  ctx.fillStyle = halo;
+  ctx.beginPath(); ctx.arc(cx, cy, heartR * 6, 0, Math.PI * 2); ctx.fill();
+  const heart = ctx.createRadialGradient(cx, cy, 0, cx, cy, heartR * 3);
+  heart.addColorStop(0, rgba([245, 253, 255], (0.5 + 0.45 * g) * ORB_DIM));
+  heart.addColorStop(0.3, rgba(C, (0.75 + 0.15 * beat) * ORB_DIM));
+  heart.addColorStop(1, rgba(C, 0));
+  ctx.fillStyle = heart;
+  ctx.beginPath(); ctx.arc(cx, cy, heartR * 3, 0, Math.PI * 2); ctx.fill();
+
+  ctx.globalCompositeOperation = "source-over";
+
+  // wavy bend: redraw the frame in horizontal slices pushed sideways by smooth waves
+  if (warp > 0.01) {
+    const tb = now / 1000, SL = 64, sh = cv.height / SL;
+    warpCtx.globalCompositeOperation = "copy";
+    warpCtx.drawImage(cv, 0, 0);
+    mctx.setTransform(1, 0, 0, 1, 0, 0);
+    mctx.globalCompositeOperation = "source-over";
+    mctx.drawImage(bgLayer, 0, 0);
+    const amp = warp * R * DPR;
+    const p1 = Math.sin(tb * 0.31) * 3, p2 = Math.sin(tb * 0.23) * 4;
+    for (let i = 0; i < SL; i++) {
+      const v = i / SL;
+      const dx = amp * (0.045 * Math.sin(v * 6.3 * (1.5 + Math.sin(tb * 0.2)) + tb * 2.1 + p1)
+                      + 0.025 * Math.sin(v * 6.3 * 4.0 - tb * 3.3 + p2));
+      const y = Math.floor(i * sh);
+      mctx.drawImage(warpBuf, 0, y, cv.width, Math.ceil(sh) + 1, dx, y, cv.width, Math.ceil(sh) + 1);
+    }
+    mctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  }
+
+  if (webs.length) websBox.style.setProperty("--hc", `${C[0] | 0}, ${C[1] | 0}, ${C[2] | 0}`);   // window glow matches the heart
+  drawPopThreads(C, now);
+
+  // bloom: shrink the screen, blur it, add a wider haze, then add it all back in ONE step
+  const B = bloom, strength = 0.3 + 0.5 * g;
+  mctx.setTransform(1, 0, 0, 1, 0, 0);
+  B.s1ctx.globalCompositeOperation = "copy";
+  // threshold: high contrast pushes the dark background to black, so only bright parts glow
+  if (canFilter) B.s1ctx.filter = "contrast(2.6) brightness(0.85)";
+  B.s1ctx.drawImage(cv, 0, 0, B.s1.width, B.s1.height);
+  if (canFilter) B.s1ctx.filter = "none";
+  B.s2ctx.globalCompositeOperation = "copy";
+  B.s2ctx.drawImage(B.s1, 0, 0, B.s2.width, B.s2.height);
+  B.b1ctx.globalCompositeOperation = "copy";
+  if (canFilter) B.b1ctx.filter = "blur(2px)";
+  B.b1ctx.drawImage(B.s1, 0, 0);
+  if (canFilter) B.b1ctx.filter = "none";
+  B.b1ctx.globalCompositeOperation = "lighter";
+  B.b1ctx.globalAlpha = 0.9;
+  B.b1ctx.drawImage(B.s2, 0, 0, B.b1.width, B.b1.height);   // wide haze joins at small size
+  B.b1ctx.globalAlpha = 1;
+  mctx.globalCompositeOperation = "lighter";
+  mctx.globalAlpha = strength;
+  mctx.drawImage(B.b1, 0, 0, cv.width, cv.height);           // the only full-size blend
+  mctx.globalAlpha = 1;
+  mctx.globalCompositeOperation = "source-over";
+  mctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  // hologram pass: background shows through in thin stripes, a light veil makes
+  // bright parts translucent, a faint scan band sweeps down, and a gentle flicker
+  {
+    mctx.setTransform(1, 0, 0, 1, 0, 0);
+    mctx.globalCompositeOperation = "source-over";
+    const flicker = 1 + (Math.random() - 0.5) * 0.06;
+    mctx.globalAlpha = 0.5 * flicker;
+    mctx.drawImage(scanBg, 0, 0);                                     // see-through stripes
+    mctx.globalAlpha = 0.16 * flicker;
+    mctx.drawImage(bgLayer, 0, 0);                                    // translucency veil
+    mctx.globalAlpha = 1;
+    const period = 6500, bandH = cv.height * 0.12;
+    const by = ((now % period) / period) * (cv.height + bandH * 2) - bandH;
+    const band = mctx.createLinearGradient(0, by - bandH, 0, by + bandH);
+    band.addColorStop(0, rgba(C, 0));
+    band.addColorStop(0.5, rgba(C, 0.05));
+    band.addColorStop(1, rgba(C, 0));
+    mctx.globalCompositeOperation = "lighter";
+    mctx.fillStyle = band;
+    mctx.fillRect(0, by - bandH, cv.width, bandH * 2);                // slow scan sweep
+    mctx.globalCompositeOperation = "source-over";
+    mctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  }
+
+  // text goes on top, crisp, without bloom or bending
+  ctx = mctx;
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  // labels
+  text(name, cx + heartShift, cy + R * 1.16 * heartK, Math.max(18, R * 0.1), rgba([225, 245, 255], 0.6 + 0.4 * g), "center", 10);
+  text(mode.label, cx + heartShift, cy + R * 1.16 * heartK + 26, 13, rgba(C, 0.9), "center", 6);
+
+  // clock, top left
+  const d = new Date();
+  const hh = String(d.getHours()).padStart(2, "0"), mm = String(d.getMinutes()).padStart(2, "0"),
+        ss = String(d.getSeconds()).padStart(2, "0");
+  text(`${hh}:${mm}:${ss}`, 28, 44, 26, rgba(C, 0.85), "left", 3);
+  text(d.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" }).toUpperCase(),
+       28, 68, 12, rgba(C, 0.5), "left", 2);
+
+  // system panel, top right
+  text("SYSTEM", W - 28, 40, 11, rgba(C, 0.45), "right", 3);
+  text(connected ? "ONLINE" : "NO SIGNAL", W - 28, 60, 14, rgba(C, 0.85), "right", 2);
+  if (stats.latency) text("LATENCY  " + stats.latency, W - 28, 84, 12, rgba(C, 0.6), "right", 2);
+
+  // conversation, bottom
+  const maxW = Math.min(W * 0.8, 900);
+  const fade = (at) => Math.max(0, 1 - (now - at) / 12000);
+  let y = H - 86;
+  if (userLine.text && fade(userLine.at) > 0) {
+    let u = "YOU  " + userLine.text;
+    if (u.length > 110) u = u.slice(0, 107) + "...";
+    text(u, cx, y, 14, rgba([170, 200, 215], 0.75 * fade(userLine.at)), "center", 1);
+  }
+  y += 26;
+  if (replyLine.text && fade(replyLine.at) > 0) {
+    for (const ln of wrap(replyLine.text, maxW, 16)) {
+      text(ln, cx, y, 16, rgba(C, 0.95 * fade(replyLine.at)), "center", 1);
+      y += 22;
+    }
+  }
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

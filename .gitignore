@@ -1,0 +1,21 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# personal voice models and audio, never commit these
+voices/
+*.pth
+*.onnx
+*.onnx.json
+*.wav
+*.mp3
+.jarvis_session/
+
+# personal memory and chat history, never commit these
+memory.md
+history.json
+
+# your own router examples (your town, your shows, your routines)
+routes.yaml

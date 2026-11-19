@@ -1,0 +1,18 @@
+numpy
+scipy
+sounddevice
+soundfile
+pyyaml
+python-dotenv
+requests
+faster-whisper
+kokoro>=0.9
+piper-tts
+# only needed if llm.provider is gemini
+google-genai
+# clicking, scrolling and typing in the app in front
+pyautogui
+# clicking things by name in the app in front ("click sign in")
+uiautomation
+# optional: lets "click ..." also find words that are only drawn on screen
+# winocr

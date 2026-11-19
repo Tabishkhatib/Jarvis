@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>HUD</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  html, body { margin: 0; height: 100%; background: #01060b; overflow: hidden; cursor: default; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+  .hint { position: fixed; bottom: 10px; right: 14px; color: rgba(120, 220, 255, 0.25);
+          font: 11px Consolas, "Courier New", monospace; letter-spacing: 1px; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hint">F11 FULLSCREEN</div>
+<script>
+const cv = document.getElementById("c");
+const mctx = cv.getContext("2d", { alpha: false });   // the screen
+let ctx = mctx;                                        // whatever we're drawing into right now
+let W = 0, H = 0, DPR = 1, cx = 0, cy = 0, R = 100;
+let bgLayer = null, shortTicks = null, longTicks = null;
+// Bloom: glowing parts are drawn on their own layer, then blurred copies at
+// 1/4 and 1/10 size are added on top for a soft glow and a wide haze.
+let bloom = null;
+const canFilter = "filter" in mctx;
+function makeCanvas(w, h) {
+  const c = document.createElement("canvas");
+  c.width = Math.max(1, Math.round(w)); c.height = Math.max(1, Math.round(h));
+  return [c, c.getContext("2d")];
+}
+
+// Everything that only changes when the window resizes is drawn once, here
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
+  mctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  const [s1, s1ctx] = makeCanvas(cv.width / 4, cv.height / 4);    // tight glow source
+  const [b1, b1ctx] = makeCanvas(cv.width / 4, cv.height / 4);    // tight glow, blurred
+  const [s2, s2ctx] = makeCanvas(cv.width / 12, cv.height / 12);  // wide haze
+  bloom = { s1, s1ctx, b1, b1ctx, s2, s2ctx };
+  cx = W / 2; cy = H / 2 - H * 0.03; R = Math.min(W, H) * 0.3;
+
+  bgLayer = document.createElement("canvas");
+  bgLayer.width = cv.width; bgLayer.height = cv.height;
+  const b = bgLayer.getContext("2d");
+  b.setTransform(DPR, 0, 0, DPR, 0, 0);
+  const bg = b.createRadialGradient(cx, cy, 0, cx, cy, Math.max(W, H) * 0.75);
+  bg.addColorStop(0, "#06202e"); bg.addColorStop(0.45, "#030f17"); bg.addColorStop(1, "#010409");
+  b.fillStyle = bg; b.fillRect(0, 0, W, H);
+  b.strokeStyle = "rgba(90,210,255,0.03)"; b.lineWidth = 1; b.beginPath();
+  for (let x = cx % 48; x < W; x += 48) { b.moveTo(x, 0); b.lineTo(x, H); }
+  for (let y = cy % 48; y < H; y += 48) { b.moveTo(0, y); b.lineTo(W, y); }
+  b.stroke();
+
+  // tick marks as two reusable shapes, rotated each frame instead of rebuilt
+  shortTicks = new Path2D(); longTicks = new Path2D();
+  for (let i = 0; i < 120; i++) {
+    const a = i / 120 * Math.PI * 2, long = i % 10 === 0;
+    const p = long ? longTicks : shortTicks;
+    const r1 = R * 0.86, r2 = R * (long ? 0.92 : 0.895);
+    p.moveTo(Math.cos(a) * r1, Math.sin(a) * r1);
+    p.lineTo(Math.cos(a) * r2, Math.sin(a) * r2);
+  }
+}
+window.addEventListener("resize", resize);
+resize();
+
+// ---------- live state from Python ----------
+let name = "JARVIS", state = "booting", speaking = false, connected = false;
+let voice = 0, mic = 0, shown = 0;
+let userLine = { text: "", at: 0 }, replyLine = { text: "", at: 0 };
+let stats = { brain: "", latency: "" };
+let wrapCache = { key: "", lines: [] };
+
+function connect() {
+  const es = new EventSource("/events");
+  es.onopen = () => { connected = true; };
+  es.onerror = () => { connected = false; };
+  es.onmessage = (e) => {
+    const m = JSON.parse(e.data);
+    if (m.type === "hello") name = (m.name || "Jarvis").toUpperCase();
+    else if (m.type === "state") state = m.state;
+    else if (m.type === "speaking") speaking = m.on;
+    else if (m.type === "voice") voice = Math.max(voice, m.v);
+    else if (m.type === "mic") mic = Math.max(mic, m.v);
+    else if (m.type === "user") userLine = { text: m.text, at: performance.now() };
+    else if (m.type === "reply") replyLine = { text: m.text, at: performance.now() };
+    else if (m.type === "stats") stats = { brain: m.brain, latency: m.latency };
+  };
+}
+connect();
+
+// ---------- look per mode ----------
+const MODES = {
+  booting:   { label: "INITIALISING",  glow: 0.45, spin: 0.6, hue: [90, 210, 255] },
+  sleeping:  { label: "STANDING BY",   glow: 0.22, spin: 0.08, hue: [90, 210, 255] },
+  listening: { label: "LISTENING",     glow: 0.75, spin: 0.25, hue: [90, 210, 255] },
+  thinking:  { label: "PROCESSING",    glow: 0.85, spin: 1.8,  hue: [255, 185, 80] },
+  speaking:  { label: "SPEAKING",      glow: 1.0,  spin: 0.45, hue: [120, 225, 255] },
+  offline:   { label: "OFFLINE",       glow: 0.12, spin: 0.0,  hue: [255, 90, 90] },
+};
+let cur = { glow: 0.3, spin: 0.2, hue: [90, 210, 255] };
+const lerp = (a, b, k) => a + (b - a) * k;
+const rgba = (c, a) => `rgba(${c[0] | 0},${c[1] | 0},${c[2] | 0},${a.toFixed(3)})`;
+
+// ---------- 3D particle orb ----------
+// Points spread evenly over a sphere; each frame the surface is pushed in and
+// out by a moving ripple whose height follows the voice level.
+const ORB_N = 1400;
+const orb = [];
+for (let i = 0; i < ORB_N; i++) {
+  const y = 1 - (i / (ORB_N - 1)) * 2, r = Math.sqrt(1 - y * y), phi = i * 2.39996;
+  orb.push([Math.cos(phi) * r, y, Math.sin(phi) * r]);
+}
+const RING_N = 140;
+const orbRings = [0.35, -0.6].map(tilt => {
+  const pts = [];
+  for (let i = 0; i < RING_N; i++) {
+    const a = i / RING_N * Math.PI * 2;
+    pts.push([Math.cos(a) * 1.25, Math.sin(a) * Math.sin(tilt) * 1.25, Math.sin(a) * Math.cos(tilt) * 1.25]);
+  }
+  return pts;
+});
+let orbYaw = 0, orbPitch = 0.35;
+const depthBuckets = [new Float32Array(ORB_N * 3), new Float32Array(ORB_N * 3), new Float32Array(ORB_N * 3)];
+const bucketLen = [0, 0, 0];
+let rot = 0, last = performance.now();
+const dots = Array.from({ length: 70 }, () => ({
+  a: Math.random() * Math.PI * 2, r: 0.95 + Math.random() * 0.5,
+  s: (Math.random() - 0.5) * 0.08,
+}));
+
+// Cheap glow: a wide faint stroke under a thin bright one (no shadowBlur)
+function glow(pathFn, color, alpha, width) {
+  ctx.beginPath(); pathFn();
+  ctx.strokeStyle = rgba(color, alpha * 0.22); ctx.lineWidth = width * 3.2; ctx.stroke();
+  ctx.strokeStyle = rgba(color, alpha); ctx.lineWidth = width; ctx.stroke();
+}
+function circle(r) { return () => ctx.arc(cx, cy, r, 0, Math.PI * 2); }
+function arcAt(r, a0, a1) { return () => ctx.arc(cx, cy, r, a0, a1); }
+
+function text(str, x, y, size, color, align, spacing) {
+  ctx.font = `${size}px Consolas, "Courier New", monospace`;
+  ctx.fillStyle = color; ctx.textAlign = align || "center";
+  if ("letterSpacing" in ctx) ctx.letterSpacing = (spacing || 0) + "px";
+  ctx.fillText(str, x, y);
+  if ("letterSpacing" in ctx) ctx.letterSpacing = "0px";
+}
+function wrap(str, maxWidth, size) {
+  const key = str + "|" + maxWidth + "|" + size;
+  if (wrapCache.key === key) return wrapCache.lines;  // only measure text when it changes
+  ctx.font = `${size}px Consolas, "Courier New", monospace`;
+  const words = str.split(" "), lines = [];
+  let line = "";
+  for (const w of words) {
+    const test = line ? line + " " + w : w;
+    if (ctx.measureText(test).width > maxWidth && line) { lines.push(line); line = w; }
+    else line = test;
+  }
+  if (line) lines.push(line);
+  wrapCache = { key, lines: lines.slice(-3) };
+  return wrapCache.lines;
+}
+
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  const modeName = !connected ? "offline" : speaking ? "speaking" : state;
+  const mode = MODES[modeName] || MODES.sleeping;
+  const ease = 1 - Math.exp(-dt * 4);  // time-based, same feel at any refresh rate
+  cur.glow = lerp(cur.glow, mode.glow, ease);
+  cur.spin = lerp(cur.spin, mode.spin, ease);
+  cur.hue = cur.hue.map((c, i) => lerp(c, mode.hue[i], ease));
+  const C = cur.hue, g = cur.glow;
+
+  const target = modeName === "speaking" ? voice : modeName === "listening" ? mic : 0;
+  shown = lerp(shown, target, 1 - Math.exp(-dt * (target > shown ? 30 : 7)));
+  const decay = Math.exp(-dt * 9);
+  voice *= decay; mic *= decay;
+  const breathe = modeName === "sleeping" ? 0.06 * (1 + Math.sin(now / 900)) : 0;
+  const pulse = shown + breathe;
+  rot += dt * cur.spin;
+
+  ctx = mctx;
+  ctx.globalCompositeOperation = "source-over";
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.drawImage(bgLayer, 0, 0);
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  // particles, one batch
+  ctx.fillStyle = rgba(C, 0.35 * g);
+  ctx.beginPath();
+  for (const d of dots) {
+    d.a += d.s * dt * (0.3 + cur.spin);
+    const rr = R * d.r;
+    ctx.rect(cx + Math.cos(d.a) * rr, cy + Math.sin(d.a) * rr, 1.6, 1.6);
+  }
+  ctx.fill();
+
+  ctx.globalCompositeOperation = "lighter";
+
+  // outer ring with slow arcs and an orbiting dot
+  ctx.beginPath(); circle(R * 1.02)();
+  ctx.strokeStyle = rgba(C, 0.18 * g); ctx.lineWidth = 1; ctx.stroke();
+  ctx.lineCap = "round";
+  for (let i = 0; i < 4; i++) {
+    const a = -rot * 0.35 + i * Math.PI / 2;
+    glow(arcAt(R * 1.02, a, a + 0.55 - i * 0.08), C, 0.75 * g, 3);
+  }
+  ctx.lineCap = "butt";
+  const orbit = rot * 0.9, ox = cx + Math.cos(orbit) * R * 1.02, oy = cy + Math.sin(orbit) * R * 1.02;
+  ctx.fillStyle = rgba(C, 0.25 * g); ctx.beginPath(); ctx.arc(ox, oy, 8, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = rgba(C, g); ctx.beginPath(); ctx.arc(ox, oy, 3.2, 0, Math.PI * 2); ctx.fill();
+
+  // tick ring: reuse the shapes, just rotate
+  ctx.save();
+  ctx.translate(cx, cy); ctx.rotate(rot * 0.12);
+  ctx.strokeStyle = rgba(C, 0.3 * g); ctx.lineWidth = 1; ctx.stroke(shortTicks);
+  ctx.strokeStyle = rgba(C, 0.7 * g); ctx.lineWidth = 2; ctx.stroke(longTicks);
+  ctx.restore();
+
+  // segmented ring, opposite direction
+  ctx.setLineDash([R * 0.11, R * 0.035]);
+  ctx.lineDashOffset = rot * R * 0.25;
+  glow(circle(R * 0.74), C, 0.5 * g, 6);
+  ctx.setLineDash([]);
+  ctx.beginPath(); circle(R * 0.68)();
+  ctx.strokeStyle = rgba(C, 0.2 * g); ctx.lineWidth = 1; ctx.stroke();
+
+  // inner arcs; extra fast arcs while thinking
+  ctx.lineCap = "round";
+  for (let i = 0; i < 3; i++) {
+    const a = rot * (1.2 + i * 0.3) + i * 2.1;
+    glow(arcAt(R * 0.56, a, a + 1.1), C, 0.85 * g, 2.5);
+  }
+  if (modeName === "thinking") {
+    for (let i = 0; i < 2; i++) {
+      const a = -rot * 3 + i * Math.PI;
+      glow(arcAt(R * 0.62, a, a + 0.7), C, 0.9, 2);
+    }
+  }
+  ctx.lineCap = "butt";
+
+  // ---------- 3D particle orb ----------
+  orbYaw += dt * (0.25 + cur.spin * 0.55);
+  orbPitch = 0.35 + Math.sin(now / 4000) * 0.15;
+  const cyaw = Math.cos(orbYaw), syaw = Math.sin(orbYaw);
+  const cpit = Math.cos(orbPitch), spit = Math.sin(orbPitch);
+  const orbR = R * 0.36 * (1 + pulse * 0.12);
+  const ripple = 0.04 + pulse * 0.38;            // how far the surface moves
+  const tt = now / 1000;
+  const focal = 3.2;                              // perspective strength
+  bucketLen[0] = bucketLen[1] = bucketLen[2] = 0;
+  for (let i = 0; i < ORB_N; i++) {
+    const p = orb[i];
+    // moving ripple over the surface
+    const n = Math.sin(p[0] * 3.1 + tt * 1.7) * Math.sin(p[1] * 2.7 - tt * 1.3) * Math.sin(p[2] * 3.3 + tt * 2.1)
+            + 0.5 * Math.sin(p[0] * 6.0 - tt * 3.1 + p[2] * 4.0);
+    const k = 1 + n * ripple;
+    let x = p[0] * k, y = p[1] * k, z = p[2] * k;
+    // rotate: yaw then pitch
+    const x1 = x * cyaw + z * syaw, z1 = -x * syaw + z * cyaw;
+    const y2 = y * cpit - z1 * spit, z2 = y * spit + z1 * cpit;
+    const sc = focal / (focal + z2);
+    const b = z2 < -0.35 ? 2 : z2 < 0.35 ? 1 : 0;  // 2 = front (brightest)
+    const arr = depthBuckets[b], j = bucketLen[b];
+    arr[j] = cx + x1 * orbR * sc; arr[j + 1] = cy + y2 * orbR * sc; arr[j + 2] = sc;
+    bucketLen[b] = j + 3;
+  }
+  for (let b = 0; b < 3; b++) {
+    const arr = depthBuckets[b], size = 1.0 + b * 0.45;
+    // front particles: the state colour mixed with a little white, so they sparkle but keep the tint
+    const front = [C[0] * 0.6 + 102, C[1] * 0.6 + 102, C[2] * 0.6 + 102];
+    ctx.fillStyle = b === 2 ? rgba(front, 0.55 + 0.45 * g) : rgba(C, (0.22 + b * 0.3) * g);
+    ctx.beginPath();
+    for (let j = 0; j < bucketLen[b]; j += 3) {
+      const s2 = size * arr[j + 2];
+      ctx.rect(arr[j] - s2 / 2, arr[j + 1] - s2 / 2, s2, s2);
+    }
+    ctx.fill();
+  }
+
+  // two tilted orbit rings around the orb, in the same 3D space
+  for (let r = 0; r < orbRings.length; r++) {
+    const pts = orbRings[r], spinR = tt * (r ? -0.6 : 0.45) * (0.5 + cur.spin);
+    const cs = Math.cos(spinR), sn = Math.sin(spinR);
+    ctx.beginPath();
+    for (let i = 0; i <= RING_N; i++) {
+      const p = pts[i % RING_N];
+      let x = p[0] * cs - p[2] * sn, z = p[0] * sn + p[2] * cs, y = p[1];
+      const x1 = x * cyaw + z * syaw, z1 = -x * syaw + z * cyaw;
+      const y2 = y * cpit - z1 * spit, z2 = y * spit + z1 * cpit;
+      const sc = focal / (focal + z2);
+      const px = cx + x1 * orbR * sc, py = cy + y2 * orbR * sc;
+      i ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+    }
+    ctx.strokeStyle = rgba(C, 0.35 * g); ctx.lineWidth = 1.2; ctx.stroke();
+  }
+
+  // bright heart in the middle
+  const heartR = R * (0.07 + pulse * 0.05);
+  const heart = ctx.createRadialGradient(cx, cy, 0, cx, cy, heartR * 3);
+  heart.addColorStop(0, rgba([240, 252, 255], 0.9 * (0.4 + 0.6 * g)));
+  heart.addColorStop(0.3, rgba(C, 0.55 * g));
+  heart.addColorStop(1, rgba(C, 0));
+  ctx.fillStyle = heart;
+  ctx.beginPath(); ctx.arc(cx, cy, heartR * 3, 0, Math.PI * 2); ctx.fill();
+
+  ctx.globalCompositeOperation = "source-over";
+
+  // bloom: shrink the screen, blur it, add a wider haze, then add it all back in ONE step
+  const B = bloom, strength = 0.5 + 0.6 * g;
+  mctx.setTransform(1, 0, 0, 1, 0, 0);
+  B.s1ctx.globalCompositeOperation = "copy";
+  // threshold: high contrast pushes the dark background to black, so only bright parts glow
+  if (canFilter) B.s1ctx.filter = "contrast(2.6) brightness(0.85)";
+  B.s1ctx.drawImage(cv, 0, 0, B.s1.width, B.s1.height);
+  if (canFilter) B.s1ctx.filter = "none";
+  B.s2ctx.globalCompositeOperation = "copy";
+  B.s2ctx.drawImage(B.s1, 0, 0, B.s2.width, B.s2.height);
+  B.b1ctx.globalCompositeOperation = "copy";
+  if (canFilter) B.b1ctx.filter = "blur(2px)";
+  B.b1ctx.drawImage(B.s1, 0, 0);
+  if (canFilter) B.b1ctx.filter = "none";
+  B.b1ctx.globalCompositeOperation = "lighter";
+  B.b1ctx.globalAlpha = 0.9;
+  B.b1ctx.drawImage(B.s2, 0, 0, B.b1.width, B.b1.height);   // wide haze joins at small size
+  B.b1ctx.globalAlpha = 1;
+  mctx.globalCompositeOperation = "lighter";
+  mctx.globalAlpha = strength;
+  mctx.drawImage(B.b1, 0, 0, cv.width, cv.height);           // the only full-size blend
+  mctx.globalAlpha = 1;
+  mctx.globalCompositeOperation = "source-over";
+  mctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  // text goes on top, crisp, without bloom
+  ctx = mctx;
+
+  // labels
+  text(name, cx, cy + R * 1.16, Math.max(18, R * 0.1), rgba([225, 245, 255], 0.6 + 0.4 * g), "center", 10);
+  text(mode.label, cx, cy + R * 1.16 + 26, 13, rgba(C, 0.9), "center", 6);
+
+  // clock, top left
+  const d = new Date();
+  const hh = String(d.getHours()).padStart(2, "0"), mm = String(d.getMinutes()).padStart(2, "0"),
+        ss = String(d.getSeconds()).padStart(2, "0");
+  text(`${hh}:${mm}:${ss}`, 28, 44, 26, rgba(C, 0.85), "left", 3);
+  text(d.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" }).toUpperCase(),
+       28, 68, 12, rgba(C, 0.5), "left", 2);
+
+  // system panel, top right
+  text("SYSTEM", W - 28, 40, 11, rgba(C, 0.45), "right", 3);
+  text(connected ? "ONLINE" : "NO SIGNAL", W - 28, 60, 14, rgba(C, 0.85), "right", 2);
+  if (stats.brain) {
+    text("BRAIN  " + stats.brain.toUpperCase(), W - 28, 84, 12, rgba(C, 0.6), "right", 2);
+    text("LATENCY  " + stats.latency, W - 28, 102, 12, rgba(C, 0.6), "right", 2);
+  }
+
+  // conversation, bottom
+  const maxW = Math.min(W * 0.8, 900);
+  const fade = (at) => Math.max(0, 1 - (now - at) / 12000);
+  let y = H - 86;
+  if (userLine.text && fade(userLine.at) > 0) {
+    let u = "YOU  " + userLine.text;
+    if (u.length > 110) u = u.slice(0, 107) + "...";
+    text(u, cx, y, 14, rgba([170, 200, 215], 0.75 * fade(userLine.at)), "center", 1);
+  }
+  y += 26;
+  if (replyLine.text && fade(replyLine.at) > 0) {
+    for (const ln of wrap(replyLine.text, maxW, 16)) {
+      text(ln, cx, y, 16, rgba(C, 0.95 * fade(replyLine.at)), "center", 1);
+      y += 22;
+    }
+  }
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

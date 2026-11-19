@@ -1,0 +1,43 @@
+assistant_name: Jarvis
+user_title: sir
+
+stt:
+  model: medium.en       # more accurate hearing (uses about 1 GB more GPU memory than small.en)
+  device: cuda
+  compute_type: float16
+
+llm:
+  provider: router      # router | claude_code | ollama | gemini
+  router_max_local_words: 14
+  claude_code_model: haiku         # haiku is fastest for voice. sonnet or opus for harder questions
+  claude_code_workdir: .jarvis_session
+  ollama_url: http://localhost:11434
+  ollama_model: qwen3:8b
+  gemini_model: gemini-2.5-flash
+  max_history: 10       # past turns kept in context
+
+tts:
+  provider: piper
+  piper_model: voices/en_GB-jarvis-high.onnx
+  piper_length_scale: 1.2
+  azure_voice: en-GB-RyanNeural
+  azure_region: uksouth
+  elevenlabs_voice_id: ""
+  elevenlabs_model: eleven_flash_v2_5
+  # Plug in any local TTS you run yourself. {text_file} and {out_file} get filled in,
+  # and the command must write a .wav to {out_file}.
+  command: ""
+
+
+effects:
+  enabled: true
+  highpass_hz: 120      # trims the low end so it sounds more "speaker"
+  echo_ms: [23, 41]     # short room taps, gives the AI shimmer
+  echo_gain: 0.18
+
+audio:
+  input_rate: 16000
+
+listen:
+  silence_to_end: 0.8   # normal pause that ends what you're saying
+  filler_wait: 1.6      # longer pause allowed when you end on "and", "is", "um" and the like
